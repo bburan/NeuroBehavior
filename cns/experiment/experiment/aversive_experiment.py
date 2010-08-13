@@ -16,14 +16,11 @@ class AversiveExperiment(HasTraits):
     trial_blocks = Int(0)
     
     # Show the analyzed data
-    data = Instance(AversiveData, ())
+    data = Instance(AversiveData)
 
     analyzed = DelegatesTo('analyzed_view')
     analyzed_view = Instance(AnalyzedAversiveDataView)
     paradigm = Instance(AversiveParadigm, ())
-    
-    def _data_default(self):
-        return AversiveData(store_node=self.store_node)
 
     def _data_changed(self):
         self.analyzed_view = AnalyzedAversiveDataView(data=self.data)

@@ -174,9 +174,11 @@ class DSPBuffer(BlockBuffer):
         read_func = self._read_mode[(self.channels==1, self.compression)]
         self._read = read_func.__get__(self, DSPBuffer)
 
-        if self.dsp.GetTagSize(self.name) % self.channels:
-            mesg = 'Buffer size must be a multiple of the channel number'
-            raise ValueError, mesg
+        buf_size = self.dsp.GetTagSize(self.name)
+        if buf_size % self.channels:
+            mesg = 'Buffer size, %d, is not a multiple of the channel number, %d'
+            mesg = mesg % (buf_size, self.channels)
+            raise ValueError(mesg)
             
     def _set_length(self, length):
         #buf_size = self.dsp.GetTagVal(self.name_len)
@@ -449,7 +451,8 @@ class Circuit(object):
         return convert(src_unit, req_unit, value, self.fs)
 
 def load_cof(iface, circuit_name):
-    '''Loads circuit file to DSP device.  Searches cns/equipment/TDT/components directory as well as working directory.'''
+    '''Loads circuit file to DSP device.  Searches cns/equipment/TDT/components
+    directory as well as working directory.'''
     # Use os.path to construct paths since this facilitates reuse of code across
     # platforms.
     search_dirs = [os.path.join(os.path.dirname(__file__), 'components'),
