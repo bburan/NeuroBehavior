@@ -124,8 +124,30 @@ def process_node(node, summary):
             summary[key] = summary.get(key, array([0, 0, 0, 0])) + append
     return summary
 
+def process_node(node, summary):
+    #par_info = node.Data.Analyzed.AnalyzedAversiveData_0.par_info[:]
+    data = persistence.load_object(node.Data)
+    analyzed = AnalyzedAversiveData(data=data)
+    par_info = analyzed.par_info
+    paradigm = persistence.load_object(node.Paradigm)
+    if analyzed.data.total_trials < 20:
+        return summary
+    if paradigm.signal_warn.variable == 'ramp_duration':
+        dB = 97-paradigm.signal_warn.attenuation
+        for row in par_info:
+            key = row[0], dB
+            append = row[1:5]
+            summary[key] = summary.get(key, array([0, 0, 0, 0])) + append
+    elif paradigm.signal_warn.variable == 'attenuation':
+         dur = paradigm.signal_warn.ramp_duration
+         for row in par_info:
+            key = dur, 97-row[0]
+            append = row[1:5]
+            summary[key] = summary.get(key, array([0, 0, 0, 0])) + append
+    return summary
+
 if __name__ == '__main__':
-    filename = 'c:/users/brad/desktop/BNB/BNB_dt_group_6_CHL.cohort.hd5'
-    #process_file(filename)
+    #filename = 'c:/users/brad/desktop/BNB_dt_group_5_control.cohort.hd5'
+    filename = '/home/brad/projects/data/BNB_dt_group_5_control.cohort.hd5'
     #f = tables.openFile(filename, 'r')
     #process_animal(f.root.Cohort_0.animals.Animal_0)

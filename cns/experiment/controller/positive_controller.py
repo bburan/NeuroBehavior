@@ -20,6 +20,8 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 class PositiveController(ExperimentController):
+    '''
+    '''
 
     circuits = { 'circuit': ('positive-behavior-stage3', 'RX6') }
     circuit = Any
@@ -29,8 +31,8 @@ class PositiveController(ExperimentController):
                      'response_window_duration': 'circuit.resp_dur_n',
                      'score_window_duration': 'circuit.score_dur_n', 
                      'reward_duration': 'circuit.pump_dur_n', 
+                     'signal_offset_delay': 'circuit.sig_offset_del_n', 
                      'TTL_fs': 'circuit.TTL_nPer' }
-
     backend = Any
     circuit = Any
     pump = Any
@@ -44,7 +46,7 @@ class PositiveController(ExperimentController):
     completed = Bool(False)
     water_infused = Float(0)
 
-    #status = Property(Str, depends_on='current.par, state')
+    status = Property(Str, depends_on='state, current_trial, current_num_nogo')
 
     fast_tick = Event
 
@@ -52,8 +54,8 @@ class PositiveController(ExperimentController):
         super(PositiveController, self).init_equipment(info)
         self.pump = equipment.pump().Pump()
 
-    current_idx = Int(1)
-    current_trial = Int(1)
+    current_idx = Int
+    current_trial = Int
     current_poke_dur = Float
     current_num_nogo = Int
 
@@ -61,6 +63,7 @@ class PositiveController(ExperimentController):
     choice_num_nogo = Any
 
     def init_current(self, info=None):
+        # Refresh selectors
         lb = self.model.paradigm.poke_duration_lb
         ub = self.model.paradigm.poke_duration_ub
         self.choice_poke_dur = partial(np.random.uniform, lb, ub)
@@ -69,45 +72,28 @@ class PositiveController(ExperimentController):
         ub = self.model.paradigm.max_nogo
         self.choice_num_nogo = partial(np.random.randint, lb, ub+1)
 
-    def configure_next(self):
-        log.debug("next signal")
-        self.current_idx += 1
-        last_trial = self.current_trial
-        self.current_trial += 1
-
-        if last_trial == self.current_num_nogo + 1:
-            log.debug('Processing GO trial')
-            self.circuit.trial_dur_n.value = len(self.model.paradigm.nogo_signal)
-            self.configure_next_block()
-        elif last_trial == self.current_num_nogo:
-            log.debug('Triggering GO trial')
-            self.circuit.trial_dur_n.value = len(self.model.paradigm.go_signal)
-            self.circuit.trigger(2)
-
-        self.circuit.trigger(1)
-
-    def configure_next_block(self):
-        log.debug("next block")
-        self.current_trial = 1
-        self.current_poke_dur = self.choice_poke_dur()
+        self.current_trial = 0
         self.current_num_nogo = self.choice_num_nogo()
-        self.circuit.poke_dur_n.set(self.current_poke_dur, 's')
+
+        # Ensure experiment state is refreshed
+        self.process_next()
+
+    def configure_next(self):
+        pass
 
     def init_experiment(self, info):
         super(PositiveController, self).init_experiment(info)
         self.circuit.TTL.initialize(src_type=np.int8, compression='decimated')
         self._apply_go_signal()
         self._apply_nogo_signal()
+        self.circuit.signal_dur_n.value = self.circuit.go_buf_n.value
         self.init_current(info)
+        self.current_idx = 0
 
         self.fast_timer = Timer(250, self.tick, 'fast')
         self.state = 'running'
         self.circuit.start()
-        self.circuit.trigger(1)
-        import time
-        time.sleep(1)
-        self.circuit.trigger(1)
-        log.debug('oh crap')
+        self.configure_next()
 
     def start(self, info=None):
         if not self.model.paradigm.is_valid():
@@ -142,16 +128,22 @@ class PositiveController(ExperimentController):
             return 'Cannot connect to equipment'
         if self.state == 'halted':
             return 'System is halted'
-        return 'Target (%r)' % self.current.par
-
+        if self.current_trial <= self.current_num_nogo:
+            return 'NOGO trial %d of %d' % (self.current_trial,
+                                            self.current_num_nogo)
+        else:
+            return 'GO trial'
             
     def _pipeline_default(self):
         targets = [self.model.data.poke_TTL,
                    self.model.data.spout_TTL,
-                   self.model.data.trial_TTL,
+                   self.model.data.signal_TTL,
                    self.model.data.score_TTL,
-                   self.model.data.pump_TTL]
-        return int_to_TTL(5, deinterleave(targets))
+                   self.model.data.pump_TTL,
+                   self.model.data.trial_TTL,
+                   self.model.data.response_TTL,
+                   ]
+        return int_to_TTL(len(targets), deinterleave(targets))
 
     @on_trait_change('fast_tick')
     def monitor_buffers(self):
@@ -160,7 +152,27 @@ class PositiveController(ExperimentController):
     @on_trait_change('fast_tick')
     def monitor_circuit(self):
         if self.circuit.trial_idx.value > self.current_idx:
-            self.configure_next()
+            self.current_idx += 1
+            self.process_next()
+
+    def process_next(self):
+        #self.current_idx += 1
+        self.current_trial += 1
+        log.debug('NUM NOGO: %d', self.current_num_nogo)
+        log.debug('CURRENT TRIAL: %d', self.current_trial)
+
+        if self.current_trial == self.current_num_nogo + 2:
+            self.current_num_nogo = self.choice_num_nogo()
+            self.current_trial = 1
+            log.debug('NEW NUM NOGO: %d', self.current_num_nogo)
+            log.debug('NEW CURRENT TRIAL: %d', self.current_trial)
+
+        if self.current_trial == self.current_num_nogo + 1:
+            self.circuit.trigger(2)
+
+        self.current_poke_dur = self.choice_poke_dur()
+        self.circuit.poke_dur_n.set(self.current_poke_dur, 's')
+        self.circuit.trigger(1)
 
     ############################################################################
     # Code to apply parameter changes
@@ -168,8 +180,8 @@ class PositiveController(ExperimentController):
     def _reset_current(self, value):
         self.init_current()
 
-    _apply_poke_dur_lb = _reset_current
-    _apply_poke_dur_lb = _reset_current
+    _apply_poke_duration_lb = _reset_current
+    _apply_poke_duration_ub = _reset_current
     _apply_min_nogo = _reset_current
     _apply_max_nogo = _reset_current
 
@@ -182,3 +194,6 @@ class PositiveController(ExperimentController):
         signal = self.model.paradigm.nogo_signal
         self.circuit.nogo_buf.set(signal)
         self.backend.set_attenuation(signal.attenuation, 'PA5')
+
+    def log_event(self, ts, name, value):
+        pass
