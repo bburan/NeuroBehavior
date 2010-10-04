@@ -5,16 +5,22 @@ import operator as op
 from cns.widgets.handler import FileHandler, filehandler_menubar
 from enthought.pyface.api import YES, confirm
 from enthought.traits.api import HasTraits, Button, Instance, Event, \
-    on_trait_change, Property, File, Bool, Str, Any
+    on_trait_change, Property, File, Bool, Str, List
 from enthought.traits.ui.api import View, HGroup, Item, VGroup, spring, \
     InstanceEditor, TabularEditor, Group
 from enthought.traits.ui.tabular_adapter import TabularAdapter
-import tables
 import cns
 import logging
 log = logging.getLogger(__name__)
 
+sex_colormap = {'M': '#ADD8E6',
+                'F': '#FFB6C1',
+                'U': '#D3D3D3'}
+
 class AnimalAdapter(TabularAdapter):
+    """
+    Adapt a list of animals to a detailed table view.
+    """
 
     columns = [('NYU ID', 'nyu_id'),
                ('parents', 'parents'),
@@ -32,20 +38,42 @@ class AnimalAdapter(TabularAdapter):
         else: return self.item.birth.strftime('%x')
 
     def _get_bg_color(self):
-        if self.item.processed: return '#E0E0FF'
-        else: return '#FFFFFF'
+        return sex_colormap[self.item.sex]
 
     def get_width(self, object, trait, column):
         return self.widths[column]
 
-animal_table = TabularEditor(adapter=AnimalAdapter(),
-                             editable=False,
-                             #auto_update=True,
-                             update='update',
-                             selected='selected',
-                             dclicked='dclicked',
-                             column_clicked='column_clicked',
-                             right_clicked='rclicked')
+detailed_cohort_table = TabularEditor(adapter=AnimalAdapter(), 
+                                      editable=False)
+
+class SimpleAnimalAdapter(TabularAdapter):
+    
+    columns = [('animal', 'animal')]
+    
+    animal_text = Property
+    
+    def _get_animal_text(self):
+        try:
+            attributes = (self.item.identifier.capitalize(), 
+                          self.item.parents,
+                          self.item.birth.strftime('%x'))
+            return '%s\t(Litter %s born %s)' % attributes
+        except:
+            return 'Unknown'
+        
+    def _get_bg_color(self):
+        if self.item.sex == 'M':
+            return '#ADD8E6'
+        elif self.item.sex == 'F':
+            return '#FFB6C1'
+        else:
+            return '#D3D3D3'
+    
+simple_cohort_table = TabularEditor(adapter=SimpleAnimalAdapter(),
+                                    editable=False,
+                                    dclicked='dclicked',
+                                    selected='selected',
+                                    multi_select=True)
 
 class CohortViewHandler(FileHandler):
 
@@ -82,6 +110,13 @@ class CohortViewHandler(FileHandler):
             if confirm(info.ui.control, mesg % selected) == YES:
                 info.object.cohort.animals.remove(selected)
 
+dynamic_cohort_table = TabularEditor(adapter=AnimalAdapter(), update='update',
+                                     selected='selected', dclicked='dclicked',
+                                     column_clicked='column_clicked',
+                                     right_clicked='rclicked')
+
+from enthought.traits.api import Any
+
 class CohortView(HasTraits):
 
     cohort = Instance(Cohort, ())
@@ -92,6 +127,8 @@ class CohortView(HasTraits):
     column_clicked = Event
     
     _modified = Bool(False)
+
+    application = Any
     
     @on_trait_change('column_clicked')
     def sort(self, event):
@@ -107,17 +144,26 @@ class CohortView(HasTraits):
     def set_modified(self, object, name, old, new):
         if name != 'processed':
             self._modified = True
+
+    @on_trait_change('dclicked')
+    def open_view(self):
+        print 'detected'
+        view = TraitsUIView(id='foo',
+                            name='foo',
+                            obj=self.selected)
+        self.window.add_view(view)
         
-    @on_trait_change('cohort.animals.+')
-    def sort_animals(self):
-        #self.cohort.animals.sort()
-        #self.update = True
-        return
+    #@on_trait_change('cohort.animals.+')
+    #def sort_animals(self):
+    #    #self.cohort.animals.sort()
+    #    #self.update = True
+    #    return
 
     log_view = View(VGroup(Group('object.cohort.description~',
                        ),
-                       Item('object.cohort.animals', editor=animal_table,
-                            show_label=False, style='readonly'),
+                       Item('object.cohort.animals',
+                            editor=dynamic_cohort_table, show_label=False,
+                            style='readonly'),
                        Item('selected', style='custom',
                             editor=InstanceEditor(view=animal_view),
                             visible_when='selected is not None',
@@ -130,12 +176,12 @@ class CohortView(HasTraits):
                 )
     
     traits_view = View(VGroup(Group(Item('object.cohort.description', style='readonly')),
-                              Item('object.cohort.animals', editor=animal_table,
+                              Item('object.cohort.animals',
+                                   editor=dynamic_cohort_table,
                                    show_label=False, style='readonly')),
                        height=400,
                        width=600,
                        resizable=True)
-    
 
 class CohortEditView(CohortView):
 
@@ -153,8 +199,9 @@ class CohortEditView(CohortView):
     def trait_view(self, parent=None):
         group = VGroup(Group('object.cohort.description'),
                        HGroup(spring, 'add', 'delete', show_labels=False),
-                       Item('object.cohort.animals', editor=animal_table,
-                            show_label=False, style='readonly'),
+                       Item('object.cohort.animals',
+                            editor=dynamic_cohort_table, show_label=False,
+                            style='readonly'),
                        Item('selected', style='custom', show_label=False,
                             editor=InstanceEditor(view=animal_edit_view)))
 
@@ -168,3 +215,14 @@ class CohortEditView(CohortView):
                     )
 
         return view
+
+class CohortView(HasTraits):
+
+    dclicked = Event
+    selected = List(Instance('cns.data.type.Animal'))
+
+    cohort = Instance('cns.data.type.Cohort')
+    simple_view = View(Item('object.cohort.animals{}',
+                            editor=simple_cohort_table))
+    detailed_view = View(Item('object.cohort.animals{}',
+                              editor=detailed_cohort_table))
