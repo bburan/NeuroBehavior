@@ -1,7 +1,7 @@
 from cns.experiment.paradigm.paradigm import Paradigm
 from cns.signal.type import Tone, Noise
 from cns.signal.signal_dialog import SignalSelector
-from enthought.traits.api import Instance, Float, DelegatesTo, Int, Float
+from enthought.traits.api import Instance, Float, DelegatesTo, Int, Float, Bool
 from enthought.traits.ui.api import View, spring, VGroup
 
 class PositiveParadigm(Paradigm):
@@ -23,6 +23,7 @@ class PositiveParadigm(Paradigm):
     #go_probability = Float(0.5, store='attribute')
     min_nogo = Int(0, label='Minimum NOGO', store='attribute')
     max_nogo = Int(3, label='Maximum NOGO', store='attribute')
+    repeat_FA = Bool(label='Repeat NOGO if FA?', store='attribute')
 
     signal_offset_delay = Float(0.5, unit='s', store='attribute')
     intertrial_duration = Float(0.5, unit='s', store='attribute')
@@ -32,6 +33,8 @@ class PositiveParadigm(Paradigm):
     score_window_duration = Float(3, unit='s', store='attribute')
     reward_duration = Float(0.5, unit='s', store='attribute')
     spout_smooth_duration = Float(0.25, unit='s', store='attribute')
+
+    timeout_duration = Float(5, unit='s', store='attribute')
 
     poke_duration_lb = Float(0.1, unit='s', store='attribute')
     poke_duration_ub = Float(0.5, unit='s', store='attribute')
@@ -43,12 +46,14 @@ class PositiveParadigm(Paradigm):
                        #'go_probability{GO probability}',
                        'min_nogo',
                        'max_nogo',
+                       'repeat_FA',
                        'signal_offset_delay',
                        'intertrial_duration',
                        'response_window_delay',
                        'response_window_duration',
                        'score_window_duration',
                        'reward_duration',
+                       'timeout_duration',
                        'spout_smooth_duration',
                        'poke_duration_lb',
                        'poke_duration_ub',
