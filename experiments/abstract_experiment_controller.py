@@ -500,3 +500,12 @@ class AbstractExperimentController(Controller, PhysiologyControllerMixin):
         for trait in self.trait_names(current=True):
             settings[trait] = getattr(self, trait)
         return settings
+
+    def set_experiment_parameters(self, setting):
+        '''
+        Setting must be an instance of Enthought's HasTraits class.  Each trait
+        reflects a different parameter.  For single-parameter settings, there
+        will only be one trait defined.
+        '''
+        for parameter, value in setting.parameter_dict().items():
+            getattr(self, 'set_' + parameter)(value)
