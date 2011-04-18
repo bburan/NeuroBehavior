@@ -5,7 +5,6 @@ Extract the history of your experiments
 >>> h5extract.py -n paradigm -a ...=animal,._v_name=exp_name *.cohort.hd5 test.csv
 >>> h5extract.py -n positivedtdata -a ....=animal,._v_name=exp_name *.cohort.hd5 test.csv
 
-
 '''
 import sys
 sys.path.append('c:/users/brad/workspace/neurobehavior')
@@ -20,8 +19,9 @@ from pylab import *
 
 common_nodes = {
     'paradigm': { '_v_name': 'paradigm' },
-    'par_info': { '.klass': 'PositiveDTData', '_v_name': 'par_info' },
-    'animals':  { 'klass': 'Animal' },
+    'par_info': { '_v_name': 'par_info' },
+    'trial_log': { '_v_name': 'trial_log'},
+    'animal': { 'klass': 'Animal' },
     }
 
 if __name__ == '__main__':

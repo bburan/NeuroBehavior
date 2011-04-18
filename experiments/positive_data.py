@@ -3,17 +3,16 @@ from __future__ import division
 from scipy import stats
 from abstract_experiment_data import AbstractExperimentData
 from sdt_data_mixin import SDTDataMixin
-from cns.channel import FileChannel
 from enthought.traits.api import Instance, List, CFloat, Int, Float, Any, \
     Range, DelegatesTo, cached_property, on_trait_change, Array, Event, \
     Property, Undefined, Callable, Str, Enum, Bool, Int, Str, Tuple, CList
+from enthought.traits.ui.api import EnumEditor, VGroup, Item, View
 from datetime import datetime
 import numpy as np
 from cns.data.h5_utils import append_node, get_or_append_node
 from cns.pipeline import deinterleave, broadcast
 
-from cns.channel import Timeseries
-
+from cns.channel import Timeseries, FileChannel
 
 from enthought.traits.ui.api import CheckListEditor
 from enthought.chaco.api import AbstractPlotData
@@ -25,9 +24,6 @@ log = logging.getLogger(__name__)
 ts = lambda TTL: np.flatnonzero(TTL)
 edge_rising = lambda TTL: np.r_[0, np.diff(TTL.astype('i'))] == 1
 edge_falling = lambda TTL: np.r_[0, np.diff(TTL.astype('i'))] == -1
-
-def apply_mask(fun, masks, values):
-    return np.array([fun(values[m]) for m in masks])
 
 # Version log
 #
@@ -47,6 +43,14 @@ def apply_mask(fun, masks, values):
 # the column order of the trial_log table.  You will have to explicitly
 # query the columns to get the information you need out of the table rather than
 # relying on a pre-specified index.
+# V2.4 - 110415 - Switch to a volume-based reward made detection of gerbil on
+# spout slightly problematic.  Made scoring more robust.  pump_TTL data is now
+# being spooled again; however, this is simply an indicator of whether a trigger
+# was sent to the pump rather than an indicator of how long the pump was running
+# for.
+# V2.5 - 110418 - Revised global FA fraction computation to be more consistent
+# with how we score the actual trials and compute FA for the individual
+# parameters.
 class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
     '''
     trial_log is essentially a list of the trials, along with the parameters
@@ -57,11 +61,9 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
         return getattr(self, name)
 
     # VERSION is a reserved keyword in HDF5 files, so I avoid using it here.
-    OBJECT_VERSION = Float(2.3, store='attribute')
+    OBJECT_VERSION = Float(2.5, store='attribute')
 
-    store_node = Any
-
-    contact_data = Any
+    #contact_data = Any
 
     poke_TTL = Instance(FileChannel, 
             store='channel', store_path='contact/poke_TTL')
@@ -83,15 +85,6 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
             store='channel', store_path='contact/TO_TTL')
     TO_safe_TTL = Instance(FileChannel,
             store='channel', store_path='contact/TO_safe_TTL')
-
-    trial_start_timestamp   = Instance('cns.channel.Timeseries', ())
-    trial_end_timestamp     = Instance('cns.channel.Timeseries', ())
-    timeout_start_timestamp = Instance('cns.channel.Timeseries', ())
-    timeout_end_timestamp   = Instance('cns.channel.Timeseries', ())
-
-    def _create_channel(self, name, dtype):
-        contact_node = get_or_append_node(self.store_node, 'contact')
-        return FileChannel(node=contact_node, name=name, dtype=dtype)
 
     def _poke_TTL_default(self):
         return self._create_channel('poke_TTL', np.bool)
@@ -123,18 +116,6 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
     def _TO_safe_TTL_default(self):
         return self._create_channel('TO_safe_TTL', np.bool)
 
-    _trial_log = List
-    trial_log = Property(store='table', depends_on='_trial_log')
-    trial_log_columns = Tuple()
-
-    @cached_property
-    def _get_trial_log(self):
-        if len(self._trial_log) > 0:
-            return np.rec.fromrecords(self._trial_log,
-                    names=self.trial_log_columns)
-        else:
-            return []
-
     def log_trial(self, score=True, **kwargs):
         # Typically we want score to be True; however, for debugging purposes it
         # is convenient to set score to False that way we don't need to provide
@@ -145,17 +126,7 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
             kwargs.update(self.compute_response(ts_start, ts_end))
             kwargs['start'] = ts_start/self.poke_TTL.fs
             kwargs['end'] = ts_end/self.poke_TTL.fs
-
-        # Extract sorted list of values and keys from the dictionary that is to
-        # be added to trial_log
-        names, record = zip(*sorted(kwargs.items()))
-        if len(self.trial_log) == 0:
-            self.trial_log_columns = names
-            self._trial_log = [record]
-        elif names == self.trial_log_columns:
-            self._trial_log.append(record)
-        else:
-            raise ValueError, "Invalid log_trial attempt"
+        AbstractExperimentData.log_trial(self, **kwargs)
 
     def compute_response(self, ts_start, ts_end):
         '''
@@ -180,14 +151,18 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
         spout_data = self.spout_TTL.get_range_index(ts_start, ts_end)
         react_data = self.reaction_TTL.get_range_index(ts_start, ts_end)
 
-        # Did subject withdraw from nose-poke before he was allowed to react?
-        early = ~react_data.any()
+        # Did subject withdraw from nose-poke before or after he was allowed to
+        # react?
+        if ~react_data.any():
+            reaction = 'early'
+        elif poke_data[react_data].all():
+            reaction = 'late'
+        else:
+            reaction = 'normal'
 
         # Regardless of whether or not the subject reacted early, what was his
-        # answer?
-        if poke_data.all():
-            response = 'no withdraw'
-        elif spout_data.any():
+        # response?
+        if spout_data.any():
             response = 'spout'
         elif poke_data[-1] == 1:
             response = 'poke'
@@ -211,19 +186,16 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
         except:
             response_time = np.nan
 
-        return dict(early_response=early, response=response,
+        return dict(reaction=reaction, response=response,
                 response_time=response_time, reaction_time=reaction_time)
 
     go_indices   = Property(Array('i'), depends_on='ttype_seq')
     nogo_indices = Property(Array('i'), depends_on='ttype_seq')
 
-    pars = Property(List(Int), depends_on='trial_log')
     go_trial_count = Property(Int, store='attribute', depends_on='trial_log')
     nogo_trial_count = Property(Int, store='attribute', depends_on='trial_log')
 
     par_info = Property(store='table', depends_on='par_dprime')
-
-    parameters = List(['parameter'])
 
     @cached_property
     def _get_par_info(self):
@@ -251,23 +223,16 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
             data[parameter] = [p[i] for p in self.pars]
         return np.rec.fromarrays(data.values(), names=data.keys())
 
-    # Splits trial_log into individual elements as needed
+    # Splits trial_log into individual sequences as needed
     ts_seq          = Property(Array('i'), depends_on='trial_log')
-    par_seq         = Property(Array('f'), depends_on='trial_log')
     ttype_seq       = Property(Array('S'), depends_on='trial_log')
     resp_seq        = Property(Array('S'), depends_on='trial_log')
     resp_time_seq   = Property(Array('f'), depends_on='trial_log')
     react_time_seq  = Property(Array('f'), depends_on='trial_log')
-    early_seq       = Property(Array('bool'), depends_on='trial_log')
+    react_seq       = Property(Array('S'), depends_on='trial_log')
 
-    @cached_property
-    def _get_par_seq(self):
-        try:
-            arr = np.empty(len(self.trial_log), dtype=object)
-            arr[:] = zip(*[self.trial_log[p] for p in self.parameters])
-            return arr
-        except:
-            return np.array([])
+    # The following sequences need to handle the edge case where the trial log
+    # is initially empty (and has no known record fields to speak of).
 
     @cached_property
     def _get_ts_seq(self):
@@ -305,20 +270,27 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
             return np.array([])
 
     @cached_property
-    def _get_early_seq(self):
+    def _get_react_seq(self):
         try:
-            return self.trial_log['early_response']
+            return self.trial_log['reaction']
         except:
             return np.array([])
 
     # Sequences of boolean indicating trial type and subject's response.
 
-    go_seq = Property(List(Array('b')), depends_on='trial_log')
-    nogo_seq = Property(List(Array('b')), depends_on='trial_log')
-    spout_seq = Property(List(Array('b')), depends_on='trial_log')
-    poke_seq = Property(List(Array('b')), depends_on='trial_log')
-    no_resp_seq = Property(List(Array('b')), depends_on='trial_log')
-    no_withdraw_seq = Property(List(Array('b')), depends_on='trial_log')
+    # Trial type sequences
+    go_seq      = Property(Array('b'), depends_on='trial_log')
+    nogo_seq    = Property(Array('b'), depends_on='trial_log')
+
+    # Response sequences
+    spout_seq   = Property(Array('b'), depends_on='trial_log')
+    poke_seq    = Property(Array('b'), depends_on='trial_log')
+    nr_seq      = Property(Array('b'), depends_on='trial_log')
+
+    # Reaction sequences
+    late_seq    = Property(Array('b'), depends_on='trial_log')
+    early_seq   = Property(Array('b'), depends_on='trial_log')
+    normal_seq  = Property(Array('b'), depends_on='trial_log')
 
     @cached_property
     def _get_go_seq(self):
@@ -337,12 +309,20 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
         return self.resp_seq == 'spout'
 
     @cached_property
-    def _get_no_withdraw_seq(self):
-        return self.resp_seq == 'no withdraw'
+    def _get_nr_seq(self):
+        return self.resp_seq == 'no response'
 
     @cached_property
-    def _get_no_resp_seq(self):
-        return self.resp_seq == 'no response'
+    def _get_late_seq(self):
+        return self.react_seq == 'late'
+
+    @cached_property
+    def _get_early_seq(self):
+        return self.react_seq == 'early'
+
+    @cached_property
+    def _get_normal_seq(self):
+        return self.react_seq == 'normal'
 
     def _get_indices(self, ttype):
         if len(self.ttype_seq):
@@ -359,32 +339,15 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
     def _get_nogo_indices(self):
         return self._get_indices('NOGO')
 
-    par_mask = Property(depends_on='trial_log')
-
-    @cached_property
-    def _get_par_mask(self):
-        result = []
-        # Numpy's equal function casts the argument on either side of the
-        # operator to an array.  Numpy's default handling of tuples is to
-        # convert it to an array where each element of the tuple is an element
-        # in the array.  We need to do the casting ourself (e.g. ensure that we
-        # have a single-element array where the element is a tuple).
-        cmp_array = np.empty(1, dtype=object)
-        for par in self.pars:
-            cmp_array[0] = par
-            m = self.par_seq == cmp_array
-            result.append(m)
-        return result
-
-    par_go_mask     = Property(depends_on='trial_log')
+    par_go_mask     = Property(depends_on='trial_log, parameters')
 
     @cached_property
     def _get_par_go_mask(self):
         return [self.go_seq & m for m in self.par_mask]
 
     # MY NEW STUFF
-    par_go_count    = Property(depends_on='trial_log')
-    par_nogo_count  = Property(depends_on='trial_log')
+    par_go_count    = Property(depends_on='trial_log, parameters')
+    par_nogo_count  = Property(depends_on='trial_log, parameters')
 
     @cached_property
     def _get_par_go_count(self):
@@ -395,57 +358,50 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
         return self.par_fa_count+self.par_cr_count
 
     hit_seq         = Property(depends_on='trial_log')
-    par_hit_count   = Property(depends_on='trial_log')
+    par_hit_count   = Property(depends_on='trial_log, parameters')
     miss_seq        = Property(depends_on='trial_log')
-    par_miss_count  = Property(depends_on='trial_log')
+    par_miss_count  = Property(depends_on='trial_log, parameters')
     fa_seq          = Property(depends_on='trial_log')
-    par_fa_count    = Property(depends_on='trial_log')
+    par_fa_count    = Property(depends_on='trial_log, parameters')
     cr_seq          = Property(depends_on='trial_log')
-    par_cr_count    = Property(depends_on='trial_log')
+    par_cr_count    = Property(depends_on='trial_log, parameters')
 
     @cached_property
     def _get_hit_seq(self):
-        return self.go_seq & self.spout_seq & ~self.early_seq
+        return self.go_seq & self.normal_seq & self.spout_seq
 
     @cached_property
     def _get_par_hit_count(self):
-        return apply_mask(np.sum, self.par_mask, self.hit_seq)
+        return self.apply_par_mask(np.sum, self.hit_seq)
 
     @cached_property
     def _get_miss_seq(self):
-        return self.go_seq & (self.poke_seq | self.no_resp_seq) & \
-                ~self.early_seq
+        return self.go_seq & (self.poke_seq | self.nr_seq) & self.normal_seq
 
     @cached_property
     def _get_par_miss_count(self):
-        return apply_mask(np.sum, self.par_mask, self.miss_seq)
+        return self.apply_par_mask(np.sum, self.miss_seq)
 
     @cached_property
     def _get_fa_seq(self):
-        return (self.nogo_seq & self.spout_seq) | \
-               (self.early_seq & self.spout_seq)
+        return (self.early_seq & self.spout_seq) | \
+               (self.nogo_seq & self.normal_seq & self.spout_seq)
 
     @cached_property
     def _get_par_fa_count(self):
-        return apply_mask(np.sum, self.par_mask, self.fa_seq)
+        return self.apply_par_mask(np.sum, self.fa_seq)
 
     @cached_property
     def _get_cr_seq(self):
-        return (self.nogo_seq | self.early_seq) & ~self.spout_seq
+        return ((self.nogo_seq & self.normal_seq) | self.early_seq) & \
+                ~self.spout_seq
 
     @cached_property
     def _get_par_cr_count(self):
-        return apply_mask(np.sum, self.par_mask, self.cr_seq)
+        return self.apply_par_mask(np.sum, self.cr_seq)
 
-    @cached_property
-    def _get_pars(self):
-        # We only want to return pars for complete trials (e.g. ones for which a
-        # go was presented).
-        seq = np.take(self.par_seq, self.go_indices, axis=0)
-        return np.unique(seq)
-
-    par_hit_frac = Property(List(Float), depends_on='trial_log')
-    par_fa_frac = Property(List(Float), depends_on='trial_log')
+    par_hit_frac = Property(List(Float), depends_on='trial_log, parameters')
+    par_fa_frac = Property(List(Float), depends_on='trial_log, parameters')
     global_fa_frac = Property(Float, depends_on='trial_log')
 
     @cached_property
@@ -458,16 +414,22 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
 
     @cached_property
     def _get_global_fa_frac(self):
-        nogo_count = len(self.nogo_indices)
-        if nogo_count == 0:
-            return np.nan
-        nogo_resp = np.take(self.resp_seq, self.nogo_indices)
-        # fa_mask is a boolean array where 1 indicates the subject went to the
-        # spout.  We can simply compute the sum of this array to determien how
-        # many times the subject went to the spout (e.g. "false alarmed")
-        fa_mask = nogo_resp == 'spout'
-        fa_count = np.sum(fa_mask)
-        return float(fa_count)/float(nogo_count)
+        fa = np.sum(self.fa_seq)
+        cr = np.sum(self.cr_seq)
+        return fa/(fa+cr)
+
+    #@cached_property
+    #def _get_global_fa_frac(self):
+    #    nogo_count = len(self.nogo_indices)
+    #    if nogo_count == 0:
+    #        return np.nan
+    #    nogo_resp = np.take(self.resp_seq, self.nogo_indices)
+    #    # fa_mask is a boolean array where 1 indicates the subject went to the
+    #    # spout.  We can simply compute the sum of this array to determien how
+    #    # many times the subject went to the spout (e.g. "false alarmed")
+    #    fa_mask = nogo_resp == 'spout'
+    #    fa_count = np.sum(fa_mask)
+    #    return float(fa_count)/float(nogo_count)
 
     @cached_property
     def _get_go_trial_count(self):
@@ -481,36 +443,89 @@ class PositiveData_0_1(AbstractExperimentData, SDTDataMixin, AbstractPlotData):
     def fire_data_changed(self):
         self.data_changed = True
 
-    par_go_nogo_ratio = Property(depends_on='trial_log')
+    par_go_nogo_ratio = Property(depends_on='trial_log, parameters')
 
     @cached_property
     def _get_par_go_nogo_ratio(self):
         return self.par_go_count/self.par_nogo_count
 
-    par_mean_reaction_time      = Property(depends_on='trial_log')
-    par_mean_response_time      = Property(depends_on='trial_log')
-    par_median_reaction_time    = Property(depends_on='trial_log')
-    par_median_response_time    = Property(depends_on='trial_log')
-    par_std_reaction_time       = Property(depends_on='trial_log')
-    par_std_response_time       = Property(depends_on='trial_log')
+    par_mean_reaction_time      = Property(depends_on='trial_log, parameters')
+    par_mean_response_time      = Property(depends_on='trial_log, parameters')
+    par_median_reaction_time    = Property(depends_on='trial_log, parameters')
+    par_median_response_time    = Property(depends_on='trial_log, parameters')
+    par_std_reaction_time       = Property(depends_on='trial_log, parameters')
+    par_std_response_time       = Property(depends_on='trial_log, parameters')
 
     def _get_par_mean_reaction_time(self):
-        return apply_mask(stats.nanmean, self.par_go_mask, self.react_time_seq)
+        return self.apply_mask(stats.nanmean, self.par_go_mask,
+                self.react_time_seq)
 
     def _get_par_mean_response_time(self):
-        return apply_mask(stats.nanmean, self.par_go_mask, self.resp_time_seq)
+        return self.apply_mask(stats.nanmean, self.par_go_mask,
+                self.resp_time_seq)
 
     def _get_par_median_reaction_time(self):
-        return apply_mask(stats.nanmedian, self.par_go_mask, self.react_time_seq)
+        return self.apply_mask(stats.nanmedian, self.par_go_mask,
+                self.react_time_seq)
 
     def _get_par_median_response_time(self):
-        return apply_mask(stats.nanmedian, self.par_go_mask, self.resp_time_seq)
+        return self.apply_mask(stats.nanmedian, self.par_go_mask,
+                self.resp_time_seq)
 
     def _get_par_std_reaction_time(self):
-        return apply_mask(stats.nanstd, self.par_go_mask, self.react_time_seq)
+        return self.apply_mask(stats.nanstd, self.par_go_mask,
+                self.react_time_seq)
 
     def _get_par_std_response_time(self):
-        return apply_mask(stats.nanstd, self.par_go_mask, self.resp_time_seq)
+        return self.apply_mask(stats.nanstd, self.par_go_mask,
+                self.resp_time_seq)
+
+    available_statistics = Property
+
+    def _get_available_statistics(self):
+        return {'par_cr_count': 'Correct rejects',
+                'par_fa_count': 'False alarms',
+                'par_hit_count': 'Hits',
+                'par_miss_count': 'Misses',
+                'par_go_count': 'GO trials',
+                'par_nogo_count': 'NOGO trials',
+                'par_dprime': 'd\'',
+                'par_criterion': 'C',
+                'par_hit_frac': 'Hit fraction',
+                'par_fa_frac': 'False alarm fraction',
+                'par_mean_reaction_time': 'Mean reaction time',
+                'par_mean_response_time': 'Mean response time',
+                }
+
+    PLOT_RANGE_HINTS = {
+                'par_cr_count'      : {'low_setting': 0, 'high_setting': 'auto'},
+                'par_fa_count'      : {'low_setting': 0, 'high_setting': 'auto'},
+                'par_hit_count'     : {'low_setting': 0, 'high_setting': 'auto'},
+                'par_miss_count'    : {'low_setting': 0, 'high_setting': 'auto'},
+                'par_go_count'      : {'low_setting': 0, 'high_setting': 'auto'},
+                'par_nogo_count'    : {'low_setting': 0, 'high_setting': 'auto'},
+                'par_dprime'        : {'low_setting': -1, 'high_setting': 3},
+                'par_criterion'     : {'low_setting': -2, 'high_setting': 2},
+                'par_hit_frac'      : {'low_setting': 0, 'high_setting': 1},
+                'par_fa_frac'       : {'low_setting': 0, 'high_setting': 1},
+                'par_mean_reaction_time': {'low_setting': 0, 'high_setting': 'auto'},
+                'par_mean_response_time': {'low_setting': 0, 'high_setting': 'auto'},
+                }
+
+    PLOT_GRID_HINTS = {
+                'par_cr_count'      : {'major_value': 5, 'minor_value': 1},
+                'par_fa_count'      : {'major_value': 5, 'minor_value': 1},
+                'par_hit_count'     : {'major_value': 5, 'minor_value': 1},
+                'par_miss_count'    : {'major_value': 5, 'minor_value': 1},
+                'par_go_count'      : {'major_value': 5, 'minor_value': 1},
+                'par_nogo_count'    : {'major_value': 5, 'minor_value': 1},
+                'par_dprime'        : {'major_value': 1, 'minor_value': 0.25},
+                'par_criterion'     : {},
+                'par_hit_frac'      : {'major_value': 0.2, 'minor_value': 0.05},
+                'par_fa_frac'       : {'major_value': 0.2, 'minor_value': 0.05},
+                'par_mean_reaction_time': {'major_value': 1, 'minor_value': 0.025},
+                'par_mean_response_time': {'major_value': 1, 'minor_value': 0.025},
+                }
 
 PositiveData = PositiveData_0_1
 

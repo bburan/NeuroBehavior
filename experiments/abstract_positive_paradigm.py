@@ -14,25 +14,7 @@ from signals import signal_options
 from enthought.traits.ui.table_column import ObjectColumn
 from enthought.traits.ui.api import TableEditor, TextEditor
 
-class TrialSetting(HasTraits):
-
-    parameter = Float(1.0, store='attribute')
-
-    def __cmp__(self, other):
-        return cmp(self.parameter, other.parameter)
-
-    def __str__(self):
-        return "{0}".format(self.parameter)
-
-table_editor = TableEditor(
-        editable=True,
-        deletable=True,
-        show_toolbar=True,
-        row_factory=TrialSetting,
-        columns=[
-            ObjectColumn(name='parameter', label='Parameter', width=75),
-            ]
-        )
+from trial_setting import TrialSetting, trial_setting_editor
 
 from eval import ExpressionTrait
 
@@ -51,6 +33,8 @@ class AbstractPositiveParadigm(AbstractExperimentParadigm, PumpParadigmMixin):
     reward_duration = ExpressionTrait(1.0, store='attribute', ignore=True)
     pump_rate       = ExpressionTrait(1.5, store='attribute', init=True)
     reward_volume   = ExpressionTrait(25, store='attribute', init=True)
+    reward_volume   = Float(25, store='attribute', init=True, 
+                            label=u'Reward volume (ul)')
 
     def _reward_duration_changed(self, value):
         # ul = ml/m * (s/60) * 1000 ul/ml
@@ -61,8 +45,10 @@ class AbstractPositiveParadigm(AbstractExperimentParadigm, PumpParadigmMixin):
         self.reward_duration = value*1e-3/self.pump_rate*60
 
     def _pump_rate_changed(self, value):
-        # ul = ml/m * (s/60) * 1000 ul/ml
-        self.reward_volume = value * (self.reward_duration/60.0) * 1e3
+        # ul = ml/m * (m/60s) * 1000 ul/ml
+        # s = ul / (ml/m * 1000 ul/ml) * 60s/m
+        #self.reward_volume = value * (self.reward_duration/60.0) * 1e3
+        self.reward_duration = self.reward_volume / (value*1e3) * 60.0
 
     nogo = ExpressionTrait('randint(2, 5)')
 
@@ -75,11 +61,14 @@ class AbstractPositiveParadigm(AbstractExperimentParadigm, PumpParadigmMixin):
     reaction_window_delay = ExpressionTrait(0, store='attribute', init=True)
     reaction_window_duration = ExpressionTrait(1.5, store='attribute', init=True)
 
+
     response_window_duration = ExpressionTrait(3, store='attribute', init=True)
 
     timeout_trigger  = Enum('FA only', 'Anytime', store='attribute', init=True)
     timeout_duration = ExpressionTrait(5, store='attribute', init=True)
     timeout_grace_period = ExpressionTrait(2.5, store='attribute', init=True)
+    fa_puff_duration = Float(0.2, store='attribute', init=True, 
+                             label='FA puff duration (s)')
 
     poke_duration = ExpressionTrait('uniform(0.1, 0.5)', store='attribute',
             init=True)
@@ -87,7 +76,7 @@ class AbstractPositiveParadigm(AbstractExperimentParadigm, PumpParadigmMixin):
     parameter_view = VGroup(
             Item('nogo_parameter'),
             VGroup(Item('parameter_order', label='Order')),
-            Item('parameters', editor=table_editor,
+            Item('parameters', editor=trial_setting_editor,
                  show_label=False),
             label='Trial Sequence',
             show_border=True,
@@ -117,15 +106,15 @@ class AbstractPositiveParadigm(AbstractExperimentParadigm, PumpParadigmMixin):
                          label='TO mode'),
                     Item('timeout_duration',
                          label='TO minimum duration (s)'),
-                    Item('timeout_grace_period', 
-                         label='TO grace period (s)'),
+                    'fa_puff_duration',
+                    #Item('timeout_grace_period', 
                     Item('poke_duration', label='Poke duration (s)'),
                     label='Timing',
                     ),
                 VGroup(
-                    Item('reward_duration', label='Reward duration (s)'),
-                    Item('pump_rate', label='Pump rate (mL/m)'),
-                    Item('reward_volume', label='Reward volume (ul)'),
+                    'pump_rate',
+                    'reward_volume',
+                    Item('reward_duration', style='readonly'),
                     label='Reward',
                     ),
                 ),

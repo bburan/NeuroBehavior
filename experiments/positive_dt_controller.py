@@ -1,6 +1,7 @@
 from enthought.traits.api import Instance
 from abstract_positive_controller import AbstractPositiveController
 import neurogen.block_definitions as blocks
+import numpy as np
 
 import logging
 log = logging.getLogger(__name__)
@@ -12,11 +13,9 @@ class PositiveDTController(AbstractPositiveController):
     output      = Instance(blocks.Block)
 
     def log_trial(self, ts_start, ts_end, last_ttype):
-        duration = self.current_setting_go.parameter
-        attenuation = self.current_setting_go.attenuation
         self.model.data.log_trial(ts_start=ts_start, ts_end=ts_end,
-                ttype=last_ttype, duration=duration, attenuation=attenuation,
-                speaker=self.current_speaker)
+                ttype=last_ttype, speaker=self.current_speaker,
+                **self.current_setting_go.parameter_dict())
 
     def _carrier_default(self):
         return blocks.BandlimitedNoise(seed=-1)
@@ -40,26 +39,31 @@ class PositiveDTController(AbstractPositiveController):
     def set_bandwidth(self, value):
         self.carrier.bandwidth = value
 
-    def get_sf(self, attenuation):
-        delta = self.current_attenuation-attenuation
+    def get_sf(self, attenuation, hw_attenuation):
+        delta = hw_attenuation-attenuation
         return 10**(delta/20.0)
 
-    def trigger_next(self):
-        if self.current_trial == self.current_num_nogo + 1:
-            par = self.current_setting_go.parameter
-            self.iface_behavior.set_tag('go?', 1)
-            sf = self.get_sf(self.current_setting_go.attenuation)
-            waveform = sf*self._compute_signal(par)
-            self.buffer_signal.set(waveform)
+    def set_duration(self, value):
+        self.current_duration = value
 
-            self.iface_behavior.set_tag('signal_dur_n', len(waveform))
+    def trigger_next(self):
+        if self.is_go():
+            speaker = self.select_speaker()
+            self.current_speaker = speaker
+            self.set_experiment_parameters(self.current_setting_go)
+            self.iface_behavior.set_tag('go?', 1)
+
+            attenuation = self.current_setting_go.attenuation
+            if speaker == 'primary':
+                hw_attenuation = self.current_primary_attenuation
+            else:
+                hw_attenuation = self.current_secondary_attenuation
+            sf = self.get_sf(attenuation, hw_attenuation)
+            signal = sf*self._compute_signal(self.current_duration)
+            self.set_waveform(speaker, signal)
+            self.iface_behavior.set_tag('signal_dur_n', len(signal))
         else:
             self.iface_behavior.set_tag('go?', 0)
-
-            # TODO: this is a bug!
-            #self.buffer_signal.clear()
-            # If set to 0, then the signal will play "forever".  Need to look
-            # into how to fix this in the rcx file.
             self.iface_behavior.set_tag('signal_dur_n', 1)
 
         # Update settings
