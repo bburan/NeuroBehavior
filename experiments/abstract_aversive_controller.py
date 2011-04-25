@@ -230,6 +230,7 @@ class AbstractAversiveController(AbstractExperimentController,
             self.choice_setting = choice.get(order, parameters)
             self.current_trial = 1
             if self.current_warn is None:
+                print "setting"
                 self.current_warn = self.choice_setting.next()
 
     def set_num_safe(self, value):
