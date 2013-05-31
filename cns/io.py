@@ -9,7 +9,7 @@ import h5
 
 from .util.binary_funcs import epochs, smooth_epochs
 
-def update_progress(i, n, mesg):
+def update_progress(i, n, mesg, progress_character='.'):
     '''
     Progress bar for use with the command line
     '''
@@ -20,8 +20,11 @@ def update_progress(i, n, mesg):
     # The \r tells the cursor to return to the beginning of the line rather than
     # starting a new line.  This allows us to have a progressbar-style display
     # in the console window.
-    sys.stdout.write('\r[{}{}] {:.0f}% {}'.format('#'*num_chars, ' '*num_left,
-                                                  progress*100, mesg))
+    template = '\r[{}{}] {:.0f}% {}   '
+    sys.stdout.write(template.format(progress_character*num_chars, 
+                                     ' '*num_left,
+                                     progress*100, 
+                                     mesg))
     return False
 
 def get_experiment_node(filename=None):
@@ -74,11 +77,12 @@ def load_trial_log(filename, path='*/data'):
     Path can have wildcards in it, but must point to the data node (not the
     trial_log node).
     '''
-    epochs = [
-        ('poke', '*/data/contact/poke_epoch'),
-        ('trial', '*/data/contact/trial_epoch'),
-        ('response', '*/data/contact/response_ts'),
-        ]
+    epochs = (
+        'trial_epoch',
+        'physiology_epoch',
+        'poke_epoch',
+        'signal_epoch',
+        )
 
     with tables.openFile(filename) as fh:
         base_node = h5.p_get_node(fh.root, path)
@@ -86,6 +90,9 @@ def load_trial_log(filename, path='*/data'):
 
         for basename, searchpath in epochs:
             node = h5.rgetattr(fh.root, searchpath)
+        for epoch in epochs:
+            basename = epoch.split('_')[0]
+            node = base_node._f_getChild(epoch)
             data = node[:]
             if data.ndim == 2:
                 # This is an epoch
@@ -96,6 +103,11 @@ def load_trial_log(filename, path='*/data'):
                 # This is a timestamp
                 data = data.astype('d')/node._v_attrs['fs']
                 tl[basename + '_ts']  = data    
+
+        # Pull in response timestamps as well
+        node = base_node._f_getChild('response_ts')
+        tl['response_ts|'] = node[:]
+        tl['response|'] =  node[:]/node._v_attrs['fs']
 
         return tl
 
